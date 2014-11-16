@@ -24,6 +24,10 @@
 
 extern int8_t HAL_IO_RADIO_RESET, HAL_IO_RADIO_REQN, HAL_IO_RADIO_RDY, HAL_IO_RADIO_IRQ;
 
+#ifdef SPI_HAS_TRANSACTION
+static uint8_t doing_aci_transaction = 0;
+#endif
+
 static const uint8_t dreqinttable[] = {
 #if defined(__AVR_ATmega168__) || defined(__AVR_ATmega328P__) || defined (__AVR_ATmega328__) || defined(__AVR_ATmega8__) 
   2, 0,
@@ -313,6 +317,7 @@ void hal_aci_tl_init()
   delay(30); //Wait for the nRF8001 to get hold of its lines - the lines float for a few ms after the reset
   if (HAL_IO_RADIO_IRQ != 0xFF) {
     #ifdef SPI_HAS_TRANSACTION
+    doing_aci_transaction = 0;
     SPI.usingInterrupt(HAL_IO_RADIO_IRQ);
     #endif
     attachInterrupt(HAL_IO_RADIO_IRQ, m_rdy_line_handle, LOW); 
@@ -343,7 +348,15 @@ bool hal_aci_tl_send(hal_aci_data_t *p_aci_cmd)
     m_print_aci_data(p_aci_cmd);
   }
   
+  #ifdef SPI_HAS_TRANSACTION
+  doing_aci_transaction = 1;
+  SPI.beginTransaction(SPISettings(2000000, LSBFIRST, SPI_MODE0));
   HAL_IO_SET_STATE(HAL_IO_RADIO_REQN, 0);
+  while (digitalRead(HAL_IO_RADIO_RDY) == HIGH) /*wait*/ ;
+  hal_aci_tl_poll_get();
+  #else
+  HAL_IO_SET_STATE(HAL_IO_RADIO_REQN, 0);
+  #endif
   return ret_val;
 }
 
@@ -356,11 +369,15 @@ hal_aci_data_t * hal_aci_tl_poll_get(void)
   uint8_t max_bytes;
   hal_aci_data_t data_to_send;
 
-
+  if (digitalRead(HAL_IO_RADIO_RDY) == HIGH) return &received_data;
   //SPI.begin();  
     
   #ifdef SPI_HAS_TRANSACTION
-  SPI.beginTransaction(SPISettings(2000000, LSBFIRST, SPI_MODE0));
+  if (!doing_aci_transaction) {
+    doing_aci_transaction = 1;
+    SPI.beginTransaction(SPISettings(2000000, LSBFIRST, SPI_MODE0));
+  }
+  repeat:
   #endif
   HAL_IO_SET_STATE(HAL_IO_RADIO_REQN, 0);
   
@@ -406,6 +423,7 @@ hal_aci_data_t * hal_aci_tl_poll_get(void)
   //RDYN should follow the REQN line in approx 100ns
   #ifdef SPI_HAS_TRANSACTION
   SPI.endTransaction();
+  doing_aci_transaction = 0;
   #endif
   
   sleep_enable();
@@ -416,7 +434,14 @@ hal_aci_data_t * hal_aci_tl_poll_get(void)
   if (false == m_aci_q_is_empty(&aci_tx_q))
   {
     //Lower the REQN line to start a new ACI transaction         
+    #ifdef SPI_HAS_TRANSACTION
+    doing_aci_transaction = 1;
+    SPI.beginTransaction(SPISettings(2000000, LSBFIRST, SPI_MODE0));
+    while (digitalRead(HAL_IO_RADIO_RDY) == HIGH) /*wait*/ ;
+    goto repeat;
+    #else
     HAL_IO_SET_STATE(HAL_IO_RADIO_REQN, 0); 
+    #endif
   }
   
   /* valid Rx available or transmit finished*/

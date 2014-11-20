@@ -25,7 +25,7 @@
 extern int8_t HAL_IO_RADIO_RESET, HAL_IO_RADIO_REQN, HAL_IO_RADIO_RDY, HAL_IO_RADIO_IRQ;
 
 #ifdef SPI_HAS_TRANSACTION
-static uint8_t doing_aci_transaction = 0;
+static volatile uint8_t doing_aci_transaction = 0;
 #endif
 
 static const uint8_t dreqinttable[] = {
@@ -195,22 +195,16 @@ void m_print_aci_data(hal_aci_data_t *p_data)
   Serial.println(F(""));
 }
 
-void toggle_eimsk(bool state)
+static void toggle_eimsk(bool state)
 {
   /* ToDo: This will currently only work with the UNO/ATMega48/88/128/328 */
   /*       due to EIMSK. Abstract this away to something MCU nuetral! */
-  uint8_t eimsk_bit = 0xFF;
-  for (uint8_t i=0; i<sizeof(dreqinttable); i+=2) {
-    if (HAL_IO_RADIO_RDY == dreqinttable[i]) {
-      eimsk_bit = dreqinttable[i+1];
-    }
-  }
-  if (eimsk_bit != 0xFF) 
+  if (HAL_IO_RADIO_IRQ != 0xFF)
   {
     if (state)
-      EIMSK |= (1 << eimsk_bit);
+      EIMSK |= (1 << HAL_IO_RADIO_IRQ);
     else
-      EIMSK &= ~(1 << eimsk_bit);
+      EIMSK &= ~(1 << HAL_IO_RADIO_IRQ);
   }
   else
   {
@@ -282,8 +276,6 @@ void hal_aci_tl_init()
   SPI.setBitOrder(LSBFIRST);
   SPI.setClockDivider(SPI_CLOCK_DIV8);
   SPI.setDataMode(SPI_MODE0);
-
-
   
   /* initialize aci cmd queue */
   m_aci_q_init(&aci_tx_q);  
@@ -349,11 +341,11 @@ bool hal_aci_tl_send(hal_aci_data_t *p_aci_cmd)
   }
   
   #ifdef SPI_HAS_TRANSACTION
-  doing_aci_transaction = 1;
+  while (doing_aci_transaction) /*wait*/ ;
   SPI.beginTransaction(SPISettings(2000000, LSBFIRST, SPI_MODE0));
+  doing_aci_transaction = 1;
   HAL_IO_SET_STATE(HAL_IO_RADIO_REQN, 0);
-  while (digitalRead(HAL_IO_RADIO_RDY) == HIGH) /*wait*/ ;
-  hal_aci_tl_poll_get();
+  toggle_eimsk(true);
   #else
   HAL_IO_SET_STATE(HAL_IO_RADIO_REQN, 0);
   #endif
@@ -369,7 +361,6 @@ hal_aci_data_t * hal_aci_tl_poll_get(void)
   uint8_t max_bytes;
   hal_aci_data_t data_to_send;
 
-  if (digitalRead(HAL_IO_RADIO_RDY) == HIGH) return &received_data;
   //SPI.begin();  
     
   #ifdef SPI_HAS_TRANSACTION
@@ -377,7 +368,6 @@ hal_aci_data_t * hal_aci_tl_poll_get(void)
     doing_aci_transaction = 1;
     SPI.beginTransaction(SPISettings(2000000, LSBFIRST, SPI_MODE0));
   }
-  repeat:
   #endif
   HAL_IO_SET_STATE(HAL_IO_RADIO_REQN, 0);
   
@@ -437,11 +427,9 @@ hal_aci_data_t * hal_aci_tl_poll_get(void)
     #ifdef SPI_HAS_TRANSACTION
     doing_aci_transaction = 1;
     SPI.beginTransaction(SPISettings(2000000, LSBFIRST, SPI_MODE0));
-    while (digitalRead(HAL_IO_RADIO_RDY) == HIGH) /*wait*/ ;
-    goto repeat;
-    #else
-    HAL_IO_SET_STATE(HAL_IO_RADIO_REQN, 0); 
+    toggle_eimsk(true);
     #endif
+    HAL_IO_SET_STATE(HAL_IO_RADIO_REQN, 0);
   }
   
   /* valid Rx available or transmit finished*/
